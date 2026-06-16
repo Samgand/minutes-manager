@@ -38,6 +38,19 @@ const ACCENT = {
   Volleyball: "#1F86C4",
 };
 
+// Period label that adapts to how many periods there are.
+// Volleyball always uses "Sets"; everything else maps by count.
+const periodLabel = (sport, count) => {
+  if (sport === "Volleyball") return count === 1 ? "Set" : "Sets";
+  switch (count) {
+    case 1: return "Match";
+    case 2: return "Halves";
+    case 3: return "Thirds";
+    case 4: return "Quarters";
+    default: return "Periods";
+  }
+};
+
 const STORAGE_KEY = "minutesManager.teams.v1";
 
 let pid = 0;
@@ -116,8 +129,13 @@ export default function MinutesManager() {
     );
 
   const players = active.players;
-  const matchMinutes = active.periodCount * active.periodLen;
-  const totalAvailable = matchMinutes * active.onCourt;
+  // While a config box is being cleared it can briefly hold "". Treat that as 1
+  // for the math, without overwriting what the user is typing.
+  const nPeriods = active.periodCount === "" || !active.periodCount ? 1 : active.periodCount;
+  const nLen = active.periodLen === "" || !active.periodLen ? 1 : active.periodLen;
+  const nCourt = active.onCourt === "" || !active.onCourt ? 1 : active.onCourt;
+  const matchMinutes = nPeriods * nLen;
+  const totalAvailable = matchMinutes * nCourt;
   const totalAssigned = players.reduce((s, p) => s + p.minutes, 0);
   const remaining = totalAvailable - totalAssigned;
   const balanced = Math.abs(remaining) < 0.5;
@@ -139,29 +157,45 @@ export default function MinutesManager() {
 
   // ---- minutes redistribution ----
   const setMinutes = (id, value) => {
-    value = Math.max(0, Math.min(matchMinutes, value));
     setPlayers((ps) => {
       const target = ps.find((p) => p.id === id);
       if (!target) return ps;
-      const delta = value - target.minutes;
-      if (delta === 0) return ps;
 
+      // Hard ceiling: a player can't hold more than a full match...
+      let capped = Math.max(0, Math.min(matchMinutes, value));
+
+      // ...and the whole squad can't be assigned more than exists.
+      // Minutes held by everyone except this player:
+      const othersTotal = ps.filter((p) => p.id !== id).reduce((s, p) => s + p.minutes, 0);
+      // The most this player may hold so the team total stays within budget:
+      const roomLeft = Math.max(0, totalAvailable - othersTotal);
+      capped = Math.min(capped, roomLeft);
+
+      const delta = capped - target.minutes;
+      if (Math.abs(delta) < 0.001) {
+        // value unchanged after capping; still write the clamped number
+        return ps.map((p) => (p.id === id ? { ...p, minutes: Math.round(capped * 10) / 10 } : p));
+      }
+
+      // When lowering a player, the freed minutes just become available again
+      // (they don't get force-fed to others). When raising, we pull from the
+      // free pool first, then from unlocked others if needed.
       const others = ps.filter((p) => p.id !== id && !p.locked);
-      const next = ps.map((p) => (p.id === id ? { ...p, minutes: value } : p));
-      let toDistribute = -delta;
+      const next = ps.map((p) => (p.id === id ? { ...p, minutes: capped } : p));
 
-      for (let iter = 0; iter < 50 && Math.abs(toDistribute) > 0.001; iter++) {
-        const pool = others.filter((p) => {
-          const cur = next.find((n) => n.id === p.id).minutes;
-          return toDistribute < 0 ? cur > 0 : cur < matchMinutes;
-        });
+      // free pool currently unassigned
+      const assignedAfter = next.reduce((s, p) => s + p.minutes, 0);
+      let overflow = assignedAfter - totalAvailable; // >0 means we must pull from others
+
+      for (let iter = 0; iter < 50 && overflow > 0.001; iter++) {
+        const pool = others.filter((p) => next.find((n) => n.id === p.id).minutes > 0);
         if (pool.length === 0) break;
-        const share = toDistribute / pool.length;
+        const share = overflow / pool.length;
         for (const o of pool) {
           const n = next.find((x) => x.id === o.id);
           const before = n.minutes;
-          n.minutes = Math.max(0, Math.min(matchMinutes, before + share));
-          toDistribute -= n.minutes - before;
+          n.minutes = Math.max(0, before - share);
+          overflow -= before - n.minutes;
         }
       }
       return next.map((p) => ({ ...p, minutes: Math.round(p.minutes * 10) / 10 }));
@@ -287,19 +321,46 @@ export default function MinutesManager() {
       {/* ---- Match config ---- */}
       <section style={styles.configBar}>
         <div style={styles.configItem}>
-          <label style={styles.cfgLabel}>{preset.periods.label}</label>
-          <input type="number" min={1} max={12} value={active.periodCount}
-            onChange={(e) => patchTeam({ periodCount: Math.max(1, +e.target.value || 1) })} style={styles.numInput} />
+          <label style={styles.cfgLabel}>{periodLabel(active.sport, active.periodCount)}</label>
+          <input type="number" inputMode="numeric" min={1} max={12}
+            value={active.periodCount === "" ? "" : active.periodCount}
+            onChange={(e) => {
+              const v = e.target.value;
+              patchTeam({ periodCount: v === "" ? "" : Math.min(12, Math.max(0, +v)) });
+            }}
+            onBlur={(e) => {
+              const v = +e.target.value;
+              patchTeam({ periodCount: !v || v < 1 ? 1 : Math.min(12, v) });
+            }}
+            style={styles.numInput} />
         </div>
         <div style={styles.configItem}>
           <label style={styles.cfgLabel}>Mins each</label>
-          <input type="number" min={1} max={120} value={active.periodLen}
-            onChange={(e) => patchTeam({ periodLen: Math.max(1, +e.target.value || 1) })} style={styles.numInput} />
+          <input type="number" inputMode="numeric" min={1} max={120}
+            value={active.periodLen === "" ? "" : active.periodLen}
+            onChange={(e) => {
+              const v = e.target.value;
+              patchTeam({ periodLen: v === "" ? "" : Math.min(120, Math.max(0, +v)) });
+            }}
+            onBlur={(e) => {
+              const v = +e.target.value;
+              patchTeam({ periodLen: !v || v < 1 ? 1 : Math.min(120, v) });
+            }}
+            style={styles.numInput} />
         </div>
         <div style={styles.configItem}>
           <label style={styles.cfgLabel}>On court</label>
-          <input type="number" min={1} max={18} value={active.onCourt}
-            onChange={(e) => patchTeam({ onCourt: Math.max(1, +e.target.value || 1) })} style={styles.numInput} />
+          <input type="number" inputMode="numeric" min={1} max={18}
+            value={active.onCourt === "" ? "" : active.onCourt}
+            onChange={(e) => {
+              const v = e.target.value;
+              patchTeam({ onCourt: v === "" ? "" : Math.min(18, Math.max(0, +v)) });
+            }}
+            onBlur={(e) => {
+              const v = +e.target.value;
+              patchTeam({ onCourt: !v || v < 1 ? 1 : Math.min(18, v) });
+            }}
+            style={styles.numInput} />
         </div>
         <div style={styles.configReadout}>
           <div style={styles.bigStat}>{matchMinutes}<span style={styles.statUnit}>min match</span></div>
