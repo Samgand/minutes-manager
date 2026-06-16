@@ -364,7 +364,10 @@ export default function MinutesManager() {
         </div>
         <div style={styles.configReadout}>
           <div style={styles.bigStat}>{matchMinutes}<span style={styles.statUnit}>min match</span></div>
-          <div style={styles.bigStat}>{totalAvailable}<span style={styles.statUnit}>player-mins to fill</span></div>
+          <div style={{ ...styles.bigStat, color: balanced ? "#2E8B57" : remaining < 0 ? "#C2384A" : accent }}>
+            <span>{fmt(Math.max(0, remaining))}<span style={styles.statTotal}> / {totalAvailable}</span></span>
+            <span style={styles.statUnit}>{balanced ? "all filled" : remaining < 0 ? "over budget" : "mins left to fill"}</span>
+          </div>
         </div>
       </section>
 
@@ -506,6 +509,7 @@ const styles = {
   configReadout: { display: "flex", gap: 22, marginLeft: "auto" },
   bigStat: { display: "flex", flexDirection: "column", fontSize: 24, fontWeight: 800, lineHeight: 1 },
   statUnit: { fontSize: 11, fontWeight: 600, color: "#9a948a", marginTop: 3 },
+  statTotal: { fontWeight: 700, color: "#bbb5ab" },
   balanceBar: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", borderRadius: 12, padding: "11px 16px", marginBottom: 18 },
   balanceLeft: { display: "flex", alignItems: "center", gap: 10 },
   balanceDot: { width: 9, height: 9, borderRadius: "50%", flexShrink: 0 },
